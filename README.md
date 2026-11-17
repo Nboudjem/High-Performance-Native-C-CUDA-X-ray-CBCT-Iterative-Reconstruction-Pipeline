@@ -1,4 +1,5 @@
-# High-Performance-Native-C-CUDA-X-ray-CBCT-Iterative-Reconstruction-Pipeline
+## High-Performance-Native-C-CUDA-X-ray-CBCT-Iterative-Reconstruction-Pipeline
+## Under optimization and tests !!!!!
 A high-performance native C++ and CUDA implementation for 3D X-ray Computed Tomography (CT) Iterative reconstruction, optimized for the **Walnut dataset**. This project migrates a Python/ASTRA-toolbox workflow into a streamlined, high-throughput GPU architecture utilizing custom Nesterov Accelerated Gradient Descent (AGD) and OpenCV preprocessing.
 
 ---
