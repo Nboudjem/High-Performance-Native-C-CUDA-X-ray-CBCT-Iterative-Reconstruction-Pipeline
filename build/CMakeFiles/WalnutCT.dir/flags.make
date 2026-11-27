@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/c++
 CXX_DEFINES = 
 
-CXX_INCLUDES = -I/content/drive/MyDrive/WalnutCBCT/include -I/usr/local/cuda/include -I/usr/local/astra/include -isystem /usr/include/opencv4 -isystem /usr/local/cuda/targets/x86_64-linux/include -isystem /usr/local/cuda/targets/x86_64-linux/include/cccl
+CXX_INCLUDES = -I/content/drive/MyDrive/WalnutCBCT/include -I/content/astra-toolbox/include -I/content/drive/MyDrive/WalnutCBCT/src -I/content/astra-toolbox/include/astra -isystem /usr/include/opencv4 -isystem /usr/local/cuda/targets/x86_64-linux/include -isystem /usr/local/cuda/targets/x86_64-linux/include/cccl
 
-CXX_FLAGS = -O3 -DNDEBUG -std=gnu++17 -fpermissive
+CXX_FLAGS = -O3 -DNDEBUG -std=gnu++17
 

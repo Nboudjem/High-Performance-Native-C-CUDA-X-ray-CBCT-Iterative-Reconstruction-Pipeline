@@ -72,24 +72,10 @@ include CMakeFiles/WalnutCT.dir/flags.make
 CMakeFiles/WalnutCT.dir/codegen:
 .PHONY : CMakeFiles/WalnutCT.dir/codegen
 
-CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o: CMakeFiles/WalnutCT.dir/flags.make
-CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o: /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp
-CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o: CMakeFiles/WalnutCT.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/content/drive/MyDrive/WalnutCBCT/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o -MF CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o.d -o CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o -c /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp
-
-CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp > CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.i
-
-CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp -o CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.s
-
 CMakeFiles/WalnutCT.dir/src/main.cpp.o: CMakeFiles/WalnutCT.dir/flags.make
 CMakeFiles/WalnutCT.dir/src/main.cpp.o: /content/drive/MyDrive/WalnutCBCT/src/main.cpp
 CMakeFiles/WalnutCT.dir/src/main.cpp.o: CMakeFiles/WalnutCT.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/content/drive/MyDrive/WalnutCBCT/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/WalnutCT.dir/src/main.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/content/drive/MyDrive/WalnutCBCT/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/WalnutCT.dir/src/main.cpp.o"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/WalnutCT.dir/src/main.cpp.o -MF CMakeFiles/WalnutCT.dir/src/main.cpp.o.d -o CMakeFiles/WalnutCT.dir/src/main.cpp.o -c /content/drive/MyDrive/WalnutCBCT/src/main.cpp
 
 CMakeFiles/WalnutCT.dir/src/main.cpp.i: cmake_force
@@ -100,16 +86,30 @@ CMakeFiles/WalnutCT.dir/src/main.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/WalnutCT.dir/src/main.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /content/drive/MyDrive/WalnutCBCT/src/main.cpp -o CMakeFiles/WalnutCT.dir/src/main.cpp.s
 
+CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o: CMakeFiles/WalnutCT.dir/flags.make
+CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o: /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp
+CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o: CMakeFiles/WalnutCT.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/content/drive/MyDrive/WalnutCBCT/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o -MF CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o.d -o CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o -c /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp
+
+CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp > CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.i
+
+CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /content/drive/MyDrive/WalnutCBCT/src/NesterovOptimizer.cpp -o CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.s
+
 # Object files for target WalnutCT
 WalnutCT_OBJECTS = \
-"CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o" \
-"CMakeFiles/WalnutCT.dir/src/main.cpp.o"
+"CMakeFiles/WalnutCT.dir/src/main.cpp.o" \
+"CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o"
 
 # External object files for target WalnutCT
 WalnutCT_EXTERNAL_OBJECTS =
 
-WalnutCT: CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o
 WalnutCT: CMakeFiles/WalnutCT.dir/src/main.cpp.o
+WalnutCT: CMakeFiles/WalnutCT.dir/src/NesterovOptimizer.cpp.o
 WalnutCT: CMakeFiles/WalnutCT.dir/build.make
 WalnutCT: CMakeFiles/WalnutCT.dir/compiler_depend.ts
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_stitching.so.4.6.0
@@ -149,7 +149,6 @@ WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_wechat_qrcode.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_xobjdetect.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_xphoto.so.4.6.0
 WalnutCT: /usr/local/cuda-13.0/targets/x86_64-linux/lib/libcudart.so
-WalnutCT: /usr/local/cuda-13.0/targets/x86_64-linux/lib/libcublas.so
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_highgui.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_datasets.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_plot.so.4.6.0
@@ -170,8 +169,6 @@ WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_photo.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_imgproc.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/libopencv_core.so.4.6.0
 WalnutCT: /usr/lib/x86_64-linux-gnu/librt.a
-WalnutCT: /usr/local/cuda-13.0/targets/x86_64-linux/lib/libcublasLt.so
-WalnutCT: /usr/local/cuda-13.0/targets/x86_64-linux/lib/libculibos.a
 WalnutCT: CMakeFiles/WalnutCT.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/content/drive/MyDrive/WalnutCBCT/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Linking CXX executable WalnutCT"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/WalnutCT.dir/link.txt --verbose=$(VERBOSE)

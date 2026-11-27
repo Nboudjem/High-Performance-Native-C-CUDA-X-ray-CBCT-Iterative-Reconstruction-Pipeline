@@ -2,7 +2,20 @@
 ## Under optimization and tests !!!!!
 A high-performance native C++ and CUDA implementation for 3D X-ray Computed Tomography (CT) Iterative reconstruction, optimized for the **Walnut dataset**. This project migrates a Python/ASTRA-toolbox workflow into a streamlined, high-throughput GPU architecture utilizing custom Nesterov Accelerated Gradient Descent (AGD) and OpenCV preprocessing.
 
+
 ---
+
+## Execute the code
+g++ -std=c++17 -O3 -DASTRA_CUDA \
+main.cpp NesterovOptimizer.cpp \
+-I/content/astra-toolbox/include \
+-I/content/astra-toolbox/include/astra \
+-L/content/astra-toolbox/build/linux/.libs \
+-Wl,-rpath,/content/astra-toolbox/build/linux/.libs \
+-lastra -ltiff -o main
+
+export LD_LIBRARY_PATH=/content/astra-toolbox/build/linux/.libs:$LD_LIBRARY_PATH
+./main
 
 ## 🚀 Key Features
 

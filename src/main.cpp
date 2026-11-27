@@ -1,793 +1,1089 @@
-#include <astra/Globals.h>
+
+#include "NesterovOptimizer.hpp"
+
+#include <astra/Data3D.h>
+#include <astra/GeometryUtil3D.h>
 #include <astra/ConeVecProjectionGeometry3D.h>
 #include <astra/VolumeGeometry3D.h>
-#include <astra/CudaProjector3D.h>
-#include <astra/CudaForwardProjectionAlgorithm3D.h>
-#include <astra/CudaBackProjectionAlgorithm3D.h>
-#include <astra/Data3D.h>
 
 #include <tiffio.h>
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <vector>
-#include <memory>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
-#include <random>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
+#include <iostream>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <filesystem>
-#include <limits>
-#include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace fs = std::filesystem;
 
-constexpr int DET_ROWS = 972;
-constexpr int DET_COLS = 768;
-constexpr int TOTAL_VIEWS = 1200;
-constexpr int SUBSAMPLING = 10;
-constexpr int ANGLES = 120;
+namespace {
 
-constexpr int VOL_SIZE = 501;
-constexpr size_t VOL_ELEMENTS =
-    size_t(VOL_SIZE) * VOL_SIZE * VOL_SIZE;
+// -----------------------------------------------------------------------------
+// Read TIFF image as float32.
+//
+// Actual TIFF dimensions:
+//     rows = 768
+//     cols = 972
+//
+// No transpose and no vertical flip are applied.
+// The returned buffer is row-major:
+//     image[row * cols + col]
+// -----------------------------------------------------------------------------
 
-constexpr size_t SINO_ELEMENTS =
-    size_t(DET_COLS) * ANGLES * DET_ROWS;
-
-const std::string BASE =
-    "/kaggle/input/datasets/boudjemianacer/cbct-data/"
-    "Walnut1/Projections/tubeV1/";
-
-const std::string OUTPUT =
-    "/kaggle/working/WalnutsOwnReconstructions/"
-    "Walnut1/";
-
-const std::string GEOMETRY_FILE =
-    BASE + "scan_geom_corrected.geom";
-
-const int GPU_ID = 0;
-
-
-// ============================================================
-// TIFF READER
-// ============================================================
-
-std::vector<uint16_t> readTiff(const std::string& filename)
+std::vector<float> read_tiff(
+    const fs::path& file_path,
+    int expected_rows,
+    int expected_cols)
 {
-    TIFF* tif = TIFFOpen(filename.c_str(), "r");
+    TIFF* tif = TIFFOpen(file_path.c_str(), "r");
 
-    if (!tif)
-        throw std::runtime_error("Cannot open TIFF: " + filename);
+    if (!tif) {
+        throw std::runtime_error(
+            "Failed to open TIFF file: " + file_path.string());
+    }
 
     uint32_t width = 0;
     uint32_t height = 0;
 
-    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width);
-    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+    uint16_t sample_format = SAMPLEFORMAT_UINT;
+    uint16_t bits_per_sample = 16;
+    uint16_t samples_per_pixel = 1;
+    uint16_t planar_config = PLANARCONFIG_CONTIG;
+    uint16_t orientation = ORIENTATION_TOPLEFT;
 
-    if (width != DET_ROWS || height != DET_COLS) {
+    if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) ||
+        !TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height)) {
+
         TIFFClose(tif);
+
         throw std::runtime_error(
-            "Unexpected TIFF dimensions in " + filename +
-            ": width=" + std::to_string(width) +
-            ", height=" + std::to_string(height));
+            "Cannot read TIFF dimensions: " + file_path.string());
     }
 
-    uint16_t bits = 0;
-    uint16_t samples = 0;
-    uint16_t format = SAMPLEFORMAT_UINT;
+    TIFFGetFieldDefaulted(
+        tif, TIFFTAG_SAMPLEFORMAT, &sample_format);
 
-    TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
-    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
-    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLEFORMAT, &format);
+    TIFFGetFieldDefaulted(
+        tif, TIFFTAG_BITSPERSAMPLE, &bits_per_sample);
 
-    if (bits != 16 || samples != 1 ||
-        format != SAMPLEFORMAT_UINT) {
+    TIFFGetFieldDefaulted(
+        tif, TIFFTAG_SAMPLESPERPIXEL, &samples_per_pixel);
+
+    TIFFGetFieldDefaulted(
+        tif, TIFFTAG_PLANARCONFIG, &planar_config);
+
+    TIFFGetFieldDefaulted(
+        tif, TIFFTAG_ORIENTATION, &orientation);
+
+
+    const int rows = static_cast<int>(height);
+    const int cols = static_cast<int>(width);
+
+
+    if (rows != expected_rows || cols != expected_cols) {
+
         TIFFClose(tif);
-        throw std::runtime_error(
-            "Expected single-channel uint16 TIFF: " + filename);
+
+        std::ostringstream msg;
+
+        msg << "Unexpected TIFF dimensions in "
+            << file_path.string()
+            << ". Expected "
+            << expected_rows << " x " << expected_cols
+            << ", received "
+            << rows << " x " << cols;
+
+        throw std::runtime_error(msg.str());
     }
 
-    std::vector<uint16_t> raw(size_t(width) * height);
 
-    for (uint32_t y = 0; y < height; ++y) {
+    if (samples_per_pixel != 1) {
+
+        TIFFClose(tif);
+
+        throw std::runtime_error(
+            "Only single-channel TIFF images are supported: " +
+            file_path.string());
+    }
+
+
+    if (planar_config != PLANARCONFIG_CONTIG) {
+
+        TIFFClose(tif);
+
+        throw std::runtime_error(
+            "Unsupported TIFF planar configuration: " +
+            file_path.string());
+    }
+
+
+    if (TIFFIsTiled(tif)) {
+
+        TIFFClose(tif);
+
+        throw std::runtime_error(
+            "Tiled TIFF is not supported: " +
+            file_path.string());
+    }
+
+
+    // The TIFFs supplied by the user are uint16.
+    // Also support uint8 and float32.
+
+    const bool is_uint8 =
+        sample_format == SAMPLEFORMAT_UINT &&
+        bits_per_sample == 8;
+
+    const bool is_uint16 =
+        sample_format == SAMPLEFORMAT_UINT &&
+        bits_per_sample == 16;
+
+    const bool is_float32 =
+        sample_format == SAMPLEFORMAT_IEEEFP &&
+        bits_per_sample == 32;
+
+
+    if (!is_uint8 && !is_uint16 && !is_float32) {
+
+        TIFFClose(tif);
+
+        throw std::runtime_error(
+            "Unsupported TIFF pixel format in: " +
+            file_path.string());
+    }
+
+
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(rows) * cols;
+
+
+    std::vector<float> image(pixel_count, 0.0f);
+
+
+    const tmsize_t scanline_size = TIFFScanlineSize(tif);
+
+    const std::size_t bytes_per_pixel =
+        static_cast<std::size_t>(bits_per_sample / 8);
+
+    const std::size_t required_scanline_size =
+        static_cast<std::size_t>(cols) * bytes_per_pixel;
+
+
+    if (scanline_size < 0 ||
+        static_cast<std::size_t>(scanline_size) <
+            required_scanline_size) {
+
+        TIFFClose(tif);
+
+        throw std::runtime_error(
+            "Invalid TIFF scanline size: " +
+            file_path.string());
+    }
+
+
+    std::vector<uint8_t> scanline(
+        static_cast<std::size_t>(scanline_size));
+
+
+    for (int r = 0; r < rows; ++r) {
+
         if (TIFFReadScanline(
-                tif, raw.data() + size_t(y) * width, y, 0) < 0) {
+                tif,
+                scanline.data(),
+                static_cast<uint32_t>(r),
+                0) < 0) {
+
             TIFFClose(tif);
+
             throw std::runtime_error(
-                "TIFF scanline read failed: " + filename);
+                "Failed reading TIFF scanline: " +
+                file_path.string());
+        }
+
+
+        for (int c = 0; c < cols; ++c) {
+
+            float value = 0.0f;
+
+            const std::size_t offset =
+                static_cast<std::size_t>(c) * bytes_per_pixel;
+
+
+            if (is_uint8) {
+
+                value = static_cast<float>(
+                    scanline[offset]);
+
+            } else if (is_uint16) {
+
+                uint16_t pixel = 0;
+
+                std::memcpy(
+                    &pixel,
+                    scanline.data() + offset,
+                    sizeof(uint16_t));
+
+                value = static_cast<float>(pixel);
+
+            } else if (is_float32) {
+
+                float pixel = 0.0f;
+
+                std::memcpy(
+                    &pixel,
+                    scanline.data() + offset,
+                    sizeof(float));
+
+                value = pixel;
+            }
+
+
+            image[
+                static_cast<std::size_t>(r) * cols + c
+            ] = value;
         }
     }
+
 
     TIFFClose(tif);
-    return raw;
+
+    return image;
 }
 
 
-// ============================================================
-// IMAGE ORIENTATION
-//
-// Python:
-//     np.transpose(np.flipud(image))
-//
-// Original raw shape: (768, 972)
-// Transformed shape:  (972, 768)
-//
-// transformed[r,c] = raw[767-c,r]
-// ============================================================
+// -----------------------------------------------------------------------------
+// Write a 2D float32 TIFF.
+// -----------------------------------------------------------------------------
 
-std::vector<float> readTransformed(
-    const std::string& filename)
+void write_float_tiff_2d(
+    const fs::path& file_path,
+    const float* data,
+    int rows,
+    int cols)
 {
-    std::vector<uint16_t> raw = readTiff(filename);
+    TIFF* tif = TIFFOpen(file_path.c_str(), "w");
 
-    std::vector<float> result(
-        size_t(DET_ROWS) * DET_COLS);
-
-    for (int r = 0; r < DET_ROWS; ++r) {
-        for (int c = 0; c < DET_COLS; ++c) {
-            result[size_t(r) * DET_COLS + c] =
-                static_cast<float>(
-                    raw[size_t(DET_COLS - 1 - c) * DET_ROWS + r]);
-        }
-    }
-
-    return result;
-}
-
-
-// ============================================================
-// LOAD DARK AND FLAT FIELD
-// ============================================================
-
-void loadCalibration(
-    std::vector<float>& dark,
-    std::vector<float>& flat)
-{
-    std::cout << "Loading dark image...\n";
-
-    dark = readTransformed(BASE + "di000000.tif");
-
-    std::cout << "Loading flat images...\n";
-
-    std::vector<float> flat0 =
-        readTransformed(BASE + "io000000.tif");
-
-    std::vector<float> flat1 =
-        readTransformed(BASE + "io000001.tif");
-
-    flat.resize(dark.size());
-
-    for (size_t i = 0; i < flat.size(); ++i) {
-        flat[i] = 0.5f * (flat0[i] + flat1[i]);
-    }
-
-    std::cout << "Calibration loaded.\n";
-}
-
-
-// ============================================================
-// LOAD MEASUREMENTS
-//
-// Projection file order from the Python main script:
-//
-//     range(1200, 0, -10)
-//
-// Therefore:
-//
-//     scan_001200.tif
-//     scan_001190.tif
-//     ...
-//     scan_000010.tif
-//
-// The geometry uses the first 1200 rows, sampled 0,10,...1190.
-// ============================================================
-
-void loadProjections(
-    const std::vector<float>& dark,
-    const std::vector<float>& flat,
-    std::vector<float>& sino)
-{
-    sino.resize(SINO_ELEMENTS);
-
-    std::cout << "Loading 120 projections...\n";
-
-    for (int angle = 0; angle < ANGLES; ++angle) {
-
-        const int projectionNumber =
-            TOTAL_VIEWS - angle * SUBSAMPLING;
-
-        std::ostringstream name;
-        name << BASE << "scan_"
-             << std::setw(6) << std::setfill('0')
-             << projectionNumber << ".tif";
-
-        std::cout << "\rProjection "
-                  << angle + 1 << "/" << ANGLES
-                  << std::flush;
-
-        std::vector<float> projection =
-            readTransformed(name.str());
-
-        for (size_t pixel = 0;
-             pixel < projection.size(); ++pixel) {
-
-            const float numerator =
-                projection[pixel] - dark[pixel];
-
-            const float denominator =
-                flat[pixel] - dark[pixel];
-
-            if (!(numerator > 0.0f) ||
-                !(denominator > 0.0f)) {
-                throw std::runtime_error(
-                    "Non-positive intensity during "
-                    "dark/flat correction.");
-            }
-
-            const float ratio = numerator / denominator;
-
-            const float value = -std::log(ratio);
-
-            if (!std::isfinite(value)) {
-                throw std::runtime_error(
-                    "Non-finite projection value.");
-            }
-
-            // ASTRA layout: (detector column, angle, detector row)
-            // Same flat memory ordering as Python array
-            // after transpose from (rows, angles, cols).
-            sino[size_t(angle) * DET_ROWS * DET_COLS + pixel] =
-                value;
-        }
-    }
-
-    std::cout << "\nProjection preprocessing complete.\n";
-}
-
-
-// ============================================================
-// LOAD CONE-VECTOR GEOMETRY
-// ============================================================
-
-astra::CConeVecProjectionGeometry3D loadGeometry()
-{
-    std::ifstream file(GEOMETRY_FILE);
-
-    if (!file)
+    if (!tif) {
         throw std::runtime_error(
-            "Cannot open geometry file: " + GEOMETRY_FILE);
+            "Failed to create output TIFF: " +
+            file_path.string());
+    }
 
-    std::vector<astra::SConeProjection> vectors;
-    vectors.reserve(ANGLES);
+
+    TIFFSetField(
+        tif, TIFFTAG_IMAGEWIDTH,
+        static_cast<uint32_t>(cols));
+
+    TIFFSetField(
+        tif, TIFFTAG_IMAGELENGTH,
+        static_cast<uint32_t>(rows));
+
+    TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
+
+    TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 32);
+
+    TIFFSetField(
+        tif, TIFFTAG_SAMPLEFORMAT,
+        SAMPLEFORMAT_IEEEFP);
+
+    TIFFSetField(
+        tif, TIFFTAG_ORIENTATION,
+        ORIENTATION_TOPLEFT);
+
+    TIFFSetField(
+        tif, TIFFTAG_PLANARCONFIG,
+        PLANARCONFIG_CONTIG);
+
+    TIFFSetField(
+        tif, TIFFTAG_COMPRESSION,
+        COMPRESSION_NONE);
+
+    TIFFSetField(
+        tif, TIFFTAG_PHOTOMETRIC,
+        PHOTOMETRIC_MINISBLACK);
+
+
+    for (int r = 0; r < rows; ++r) {
+
+        const float* row_ptr =
+            data + static_cast<std::size_t>(r) * cols;
+
+        if (TIFFWriteScanline(
+                tif,
+                const_cast<float*>(row_ptr),
+                static_cast<uint32_t>(r),
+                0) < 0) {
+
+            TIFFClose(tif);
+
+            throw std::runtime_error(
+                "Failed writing TIFF scanline: " +
+                file_path.string());
+        }
+    }
+
+
+    TIFFClose(tif);
+}
+
+
+// -----------------------------------------------------------------------------
+// Load 12-value geometry vectors from geometry file.
+// -----------------------------------------------------------------------------
+
+std::vector<double> load_geom_vectors(
+    const fs::path& geom_path,
+    const std::vector<int>& indices)
+{
+    std::ifstream ifs(geom_path);
+
+    if (!ifs.is_open()) {
+        throw std::runtime_error(
+            "Failed to open geometry file: " +
+            geom_path.string());
+    }
+
+
+    std::vector<std::array<double, 12>> all_rows;
 
     std::string line;
-    int row = 0;
 
-    while (row < TOTAL_VIEWS && std::getline(file, line)) {
+    while (std::getline(ifs, line)) {
 
-        std::istringstream stream(line);
-        double d[12];
+        if (line.empty()) {
+            continue;
+        }
 
-        for (int j = 0; j < 12; ++j) {
-            if (!(stream >> d[j])) {
-                throw std::runtime_error(
-                    "Invalid geometry row " +
-                    std::to_string(row));
+        std::istringstream iss(line);
+
+        std::array<double, 12> row{};
+
+        bool valid = true;
+
+        for (int k = 0; k < 12; ++k) {
+
+            if (!(iss >> row[k])) {
+                valid = false;
+                break;
             }
         }
 
-        if (row % SUBSAMPLING == 0) {
-
-            astra::SConeProjection p;
-
-            p.fSrcX = d[0];
-            p.fSrcY = d[1];
-            p.fSrcZ = d[2];
-
-            p.fDetUX = d[6];
-            p.fDetUY = d[7];
-            p.fDetUZ = d[8];
-
-            p.fDetVX = d[9];
-            p.fDetVY = d[10];
-            p.fDetVZ = d[11];
-
-            // Geometry file specifies detector center.
-            // ASTRA cone-vector geometry expects bottom-left corner.
-
-            p.fDetSX =
-                d[3]
-                - 0.5 * DET_ROWS * p.fDetVX
-                - 0.5 * DET_COLS * p.fDetUX;
-
-            p.fDetSY =
-                d[4]
-                - 0.5 * DET_ROWS * p.fDetVY
-                - 0.5 * DET_COLS * p.fDetUY;
-
-            p.fDetSZ =
-                d[5]
-                - 0.5 * DET_ROWS * p.fDetVZ
-                - 0.5 * DET_COLS * p.fDetUZ;
-
-            vectors.push_back(p);
+        if (valid) {
+            all_rows.push_back(row);
         }
-
-        ++row;
     }
 
-    if (row != TOTAL_VIEWS || vectors.size() != ANGLES)
-        throw std::runtime_error(
-            "Incorrect number of geometry rows or views.");
 
-    std::cout << "Geometry loaded: "
-              << vectors.size() << " views.\n";
+    std::vector<double> selected;
 
-    return astra::CConeVecProjectionGeometry3D(
-        ANGLES, DET_ROWS, DET_COLS, std::move(vectors));
-}
+    selected.reserve(indices.size() * 12);
 
 
-// ============================================================
-// SIMPLE NUMERICAL HELPERS
-// ============================================================
+    for (int idx : indices) {
 
-double norm2(const float* data, size_t n)
-{
-    double sum = 0.0;
+        if (idx < 0 ||
+            static_cast<std::size_t>(idx) >= all_rows.size()) {
 
-    for (size_t i = 0; i < n; ++i)
-        sum += double(data[i]) * data[i];
-
-    return std::sqrt(sum);
-}
-
-void copyArray(
-    const float* src,
-    float* dst,
-    size_t n)
-{
-    std::copy(src, src + n, dst);
-}
-
-void zeroArray(float* data, size_t n)
-{
-    std::fill(data, data + n, 0.0f);
-}
-
-
-// ============================================================
-// TIFF OUTPUT
-// ============================================================
-
-void saveVolume(
-    const float* volume,
-    int iteration)
-{
-    fs::create_directories(OUTPUT);
-
-    std::cout << "\nSaving reconstructed slices...\n";
-
-    for (int z = 0; z < VOL_SIZE; ++z) {
-
-        std::ostringstream filename;
-
-        filename << OUTPUT
-                 << "nnls_pos1_iter" << iteration
-                 << "_ass10_vmm10_"
-                 << std::setw(6) << std::setfill('0')
-                 << z << ".tiff";
-
-        TIFF* tif = TIFFOpen(filename.str().c_str(), "w");
-
-        if (!tif)
             throw std::runtime_error(
-                "Cannot create output TIFF: " + filename.str());
-
-        TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, VOL_SIZE);
-        TIFFSetField(tif, TIFFTAG_IMAGELENGTH, VOL_SIZE);
-        TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1);
-        TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 32);
-        TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_IEEEFP);
-        TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-        TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
-        TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
-        TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
-
-        const float* slice =
-            volume + size_t(z) * VOL_SIZE * VOL_SIZE;
-
-        for (int y = 0; y < VOL_SIZE; ++y) {
-
-            void* row = const_cast<float*>(
-                slice + size_t(y) * VOL_SIZE);
-
-            if (TIFFWriteScanline(tif, row, y, 0) < 0) {
-                TIFFClose(tif);
-                throw std::runtime_error(
-                    "Failed writing output TIFF.");
-            }
+                "Geometry index out of range: " +
+                std::to_string(idx));
         }
 
-        TIFFClose(tif);
+
+        for (int k = 0; k < 12; ++k) {
+            selected.push_back(all_rows[idx][k]);
+        }
     }
 
-    std::cout << "Saved " << VOL_SIZE
-              << " slices in:\n" << OUTPUT << "\n";
+
+    return selected;
 }
 
 
-// ============================================================
-// MAIN RECONSTRUCTION
-// ============================================================
+// -----------------------------------------------------------------------------
+// Elapsed time.
+// -----------------------------------------------------------------------------
+
+double elapsed_sec(
+    const std::chrono::steady_clock::time_point& start)
+{
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start).count();
+}
+
+} // namespace
+
+
+// =============================================================================
+// MAIN
+// =============================================================================
 
 int main()
 {
     try {
 
-        std::cout << std::setprecision(9);
+        // =====================================================================
+        // USER SETTINGS
+        // =====================================================================
 
-        std::cout << "====================================\n";
-        std::cout << "ASTRA CUDA APGD RECONSTRUCTION\n";
-        std::cout << "Walnut 1 - tubeV1\n";
-        std::cout << "====================================\n";
+        const int walnut_id = 1;
 
-        if (!astra::cudaAvailable())
-            throw std::runtime_error("ASTRA CUDA unavailable.");
+        const std::vector<int> orbits_to_recon = {1};
 
-        // ----------------------------------------------------
-        // 1. Geometry
-        // ----------------------------------------------------
+        const int angular_sub_sampling = 10;
 
-        auto projectionGeometry = loadGeometry();
+        const int voxel_per_mm = 10;
 
-        astra::CVolumeGeometry3D volumeGeometry(
-            VOL_SIZE, VOL_SIZE, VOL_SIZE,
-            -25.05f, -25.05f, -25.05f,
-             25.05f,  25.05f,  25.05f);
 
-        astra::CCudaProjector3D projector(
-            projectionGeometry, volumeGeometry);
+        const fs::path data_path =
+            "/content/drive/MyDrive";
 
-        // ----------------------------------------------------
-        // 2. Load and preprocess projection measurements
-        // ----------------------------------------------------
+        const fs::path recon_path =
+            "/content/drive/MyDrive/Walnut1/cppWalnutsOwnReconstructions";
 
-        std::vector<float> dark;
-        std::vector<float> flat;
-        std::vector<float> measured;
 
-        loadCalibration(dark, flat);
-        loadProjections(dark, flat, measured);
+        // =====================================================================
+        // TIFF DIMENSIONS
+        // =====================================================================
 
-        dark.clear();
-        dark.shrink_to_fit();
-
-        flat.clear();
-        flat.shrink_to_fit();
-
-        // ----------------------------------------------------
-        // 3. Allocate ASTRA memory
-        // ----------------------------------------------------
-
-        std::unique_ptr<astra::CFloat32ProjectionData3D>
-            measuredData(
-                astra::createCFloat32ProjectionData3DMemory(
-                    projectionGeometry));
-
-        std::unique_ptr<astra::CFloat32ProjectionData3D>
-            predictedData(
-                astra::createCFloat32ProjectionData3DMemory(
-                    projectionGeometry));
-
-        std::unique_ptr<astra::CFloat32VolumeData3D>
-            xData(
-                astra::createCFloat32VolumeData3DMemory(
-                    volumeGeometry));
-
-        std::unique_ptr<astra::CFloat32VolumeData3D>
-            bpData(
-                astra::createCFloat32VolumeData3DMemory(
-                    volumeGeometry));
-
-        if (!measuredData || !predictedData ||
-            !xData || !bpData)
-            throw std::runtime_error(
-                "ASTRA memory allocation failed.");
-
-        float* s = measuredData->getFloat32Memory();
-        float* predicted = predictedData->getFloat32Memory();
-        float* x = xData->getFloat32Memory();
-        float* bp = bpData->getFloat32Memory();
-
-        if (!s || !predicted || !x || !bp)
-            throw std::runtime_error(
-                "ASTRA float32 memory unavailable.");
-
-        copyArray(measured.data(), s, SINO_ELEMENTS);
-        zeroArray(predicted, SINO_ELEMENTS);
-
-        zeroArray(x, VOL_ELEMENTS);
-        zeroArray(bp, VOL_ELEMENTS);
-
-        measured.clear();
-        measured.shrink_to_fit();
-
-        std::cout << "\nASTRA buffers allocated.\n";
-
-        // ----------------------------------------------------
-        // 4. Initialize CUDA algorithms
-        // ----------------------------------------------------
-
-        astra::CCudaForwardProjectionAlgorithm3D fp;
-
-        if (!fp.initialize(
-                &projector, predictedData.get(),
-                xData.get(), {GPU_ID}, -1))
-            throw std::runtime_error(
-                "Forward projection initialization failed.");
-
-        // BP for measured data: ATy = A^T s
-        astra::CCudaBackProjectionAlgorithm3D bpMeasured;
-
-        if (!bpMeasured.initialize(
-                &projector, measuredData.get(), bpData.get()))
-            throw std::runtime_error(
-                "Measured backprojection initialization failed.");
-
-        bpMeasured.setGPUIndices({GPU_ID});
-
-        // BP for predicted data: A^T A x
-        astra::CCudaBackProjectionAlgorithm3D bpPredicted;
-
-        if (!bpPredicted.initialize(
-                &projector, predictedData.get(), bpData.get()))
-            throw std::runtime_error(
-                "Predicted backprojection initialization failed.");
-
-        bpPredicted.setGPUIndices({GPU_ID});
-
-        // ----------------------------------------------------
-        // 5. Compute ATy = A^T s
-        // ----------------------------------------------------
-
-        std::vector<float> ATy(VOL_ELEMENTS);
-
-        std::cout << "\nComputing A^T s...\n";
-
-        zeroArray(bp, VOL_ELEMENTS);
-
-        if (!bpMeasured.run())
-            throw std::runtime_error(
-                "Backprojection of measurements failed.");
-
-        copyArray(bp, ATy.data(), VOL_ELEMENTS);
-
-        // ----------------------------------------------------
-        // 6. Power iteration
+        // Measured directly from the three TIFF files:
         //
-        // Estimate spectral norm of A^T A.
-        // Equivalent to Python:
-        //     b_k1 = A.T * A * b_k
-        //     b_k1_norm = norm(b_k1)
-        //     b_k = b_k1 / b_k1_norm
-        // ----------------------------------------------------
+        // di000000.tif:  (768, 972)
+        // io000000.tif:  (768, 972)
+        // scan_000001.tif: (768, 972)
+        //
+        // No transpose or flip is applied.
 
-        std::cout << "\nRunning 10 power iterations...\n";
+        constexpr int projs_rows = 768;
+        constexpr int projs_cols = 972;
 
-        std::vector<float> randomVolume(VOL_ELEMENTS);
 
-        std::mt19937 generator(12345);
-        std::uniform_real_distribution<float> distribution(
-            0.0f, 1.0f);
-
-        for (float& value : randomVolume)
-            value = distribution(generator);
-
-        double lipschitz = 0.0;
-
-        for (int k = 0; k < 10; ++k) {
-
-            copyArray(randomVolume.data(), x, VOL_ELEMENTS);
-
-            zeroArray(predicted, SINO_ELEMENTS);
-
-            if (!fp.run())
-                throw std::runtime_error(
-                    "Power iteration FP failed.");
-
-            zeroArray(bp, VOL_ELEMENTS);
-
-            if (!bpPredicted.run())
-                throw std::runtime_error(
-                    "Power iteration BP failed.");
-
-            lipschitz = norm2(bp, VOL_ELEMENTS);
-
-            if (!(lipschitz > 0.0) ||
-                !std::isfinite(lipschitz))
-                throw std::runtime_error(
-                    "Invalid Lipschitz estimate.");
-
-            for (size_t i = 0; i < VOL_ELEMENTS; ++i)
-                randomVolume[i] =
-                    static_cast<float>(bp[i] / lipschitz);
-
-            std::cout << "Power iteration "
-                      << k + 1 << "/10: "
-                      << lipschitz << "\n";
+        if (angular_sub_sampling <= 0) {
+            throw std::runtime_error(
+                "angular_sub_sampling must be positive");
         }
 
-        const float nu = static_cast<float>(1.0 / lipschitz);
-
-        std::cout << "Estimated Lipschitz constant: "
-                  << lipschitz << "\n";
-
-        std::cout << "Step size nu: " << nu << "\n";
-
-        randomVolume.clear();
-        randomVolume.shrink_to_fit();
-
-        // ----------------------------------------------------
-        // 7. APGD initialization
-        //
-        // Preserve Python plugin initialization:
-        // x = initial volume (zero)
-        // x_old = x
-        // NRMx = zero
-        // NRMx_old = zero
-        // gradient = -ATy
-        // ----------------------------------------------------
-
-        zeroArray(x, VOL_ELEMENTS);
-
-        std::vector<float> x_old(VOL_ELEMENTS, 0.0f);
-        std::vector<float> NRMx(VOL_ELEMENTS, 0.0f);
-        std::vector<float> NRMx_old(VOL_ELEMENTS, 0.0f);
-        std::vector<float> gradient(VOL_ELEMENTS);
-
-        for (size_t i = 0; i < VOL_ELEMENTS; ++i)
-            gradient[i] = -ATy[i];
-
-        double t_acc = 1.0;
-        double bestObjective =
-            std::numeric_limits<double>::infinity();
-
-        constexpr int ITERATIONS = 100;
-
-        std::cout << "\n====================================\n";
-        std::cout << "Starting APGD: "
-                  << ITERATIONS << " iterations\n";
-        std::cout << "====================================\n";
-
-        // ----------------------------------------------------
-        // 8. APGD iterations
-        // ----------------------------------------------------
-
-        for (int iteration = 0;
-             iteration < ITERATIONS; ++iteration) {
-
-            const double tau =
-                (t_acc - 1.0) / (t_acc + 2.0);
-
-            t_acc += 1.0;
-
-            // Descent direction:
-            //
-            // gradient
-            // - tau/nu * (x - x_old)
-            // + tau * (NRMx - NRMx_old)
-
-            for (size_t i = 0; i < VOL_ELEMENTS; ++i) {
-
-                const double descent =
-                    gradient[i]
-                    - (tau / nu) * (x[i] - x_old[i])
-                    + tau * (NRMx[i] - NRMx_old[i]);
-
-                x_old[i] = x[i];
-
-                const float updated =
-                    static_cast<float>(x[i] - nu * descent);
-
-                // MinConstraint = 0
-                // MaxConstraint = None
-                x[i] = std::max(0.0f, updated);
-            }
-
-            // Wx = A x
-            zeroArray(predicted, SINO_ELEMENTS);
-
-            if (!fp.run())
-                throw std::runtime_error(
-                    "FP failed at iteration " +
-                    std::to_string(iteration + 1));
-
-            // Objective = 0.5 * ||Wx - s||^2
-
-            double objective = 0.0;
-
-            for (size_t i = 0; i < SINO_ELEMENTS; ++i) {
-                const double residual =
-                    double(predicted[i]) - s[i];
-
-                objective += residual * residual;
-            }
-
-            objective *= 0.5;
-
-            // NRMx = A^T A x
-            zeroArray(bp, VOL_ELEMENTS);
-
-            if (!bpPredicted.run())
-                throw std::runtime_error(
-                    "BP failed at iteration " +
-                    std::to_string(iteration + 1));
-
-            // Preserve previous NRMx.
-            copyArray(
-                NRMx.data(),
-                NRMx_old.data(),
-                VOL_ELEMENTS);
-
-            // Copy BP result to NRMx.
-            copyArray(
-                bp,
-                NRMx.data(),
-                VOL_ELEMENTS);
-
-            // gradient = NRMx - ATy
-            for (size_t i = 0; i < VOL_ELEMENTS; ++i)
-                gradient[i] = NRMx[i] - ATy[i];
-
-            // Restart condition from Python:
-            // objective[i] > min(objective[0:i+1])
-            //
-            // This is equivalent to comparing with the
-            // minimum objective from previous iterations.
-
-            if (objective > bestObjective) {
-                t_acc = 1.0;
-            }
-
-            bestObjective = std::min(
-                bestObjective, objective);
-
-            std::cout
-                << "Iteration "
-                << std::setw(3) << iteration + 1
-                << "/" << ITERATIONS
-                << " | Objective: "
-                << std::scientific << objective
-                << " | Best: " << bestObjective
-                << " | t: " << t_acc
-                << std::defaultfloat
-                << "\n";
+        if (voxel_per_mm <= 0) {
+            throw std::runtime_error(
+                "voxel_per_mm must be positive");
         }
 
-        // ----------------------------------------------------
-        // 9. Save volume
-        // ----------------------------------------------------
 
-        saveVolume(x, ITERATIONS);
+        // =====================================================================
+        // LOAD AND PREPROCESS PROJECTIONS
+        // =====================================================================
 
-        std::cout << "\n====================================\n";
-        std::cout << "RECONSTRUCTION COMPLETED\n";
-        std::cout << "====================================\n";
+        auto t0 = std::chrono::steady_clock::now();
 
-        return 0;
+        std::cout << "Load and pre-process data\n";
+
+
+        const fs::path data_path_full =
+            data_path /
+            ("Walnut" + std::to_string(walnut_id)) /
+            "Projections";
+
+
+        const std::string dark_name = "di000000.tif";
+
+        const std::vector<std::string> flat_name = {
+            "io000000.tif",
+            "io000001.tif"
+        };
+
+        const std::string vecs_name =
+            "scan_geom_corrected.geom";
+
+
+        // Geometry indices.
+
+        std::vector<int> sample_indices;
+
+        for (int idx = 0; idx < 1200;
+             idx += angular_sub_sampling) {
+
+            sample_indices.push_back(idx);
+        }
+
+
+        const int nb_projs_orbit =
+            static_cast<int>(sample_indices.size());
+
+
+        // Projection filenames.
+        //
+        // This preserves the descending filename order from your
+        // original implementation.
+        //
+        // IMPORTANT:
+        // Verify that this descending order corresponds to the
+        // selected geometry vectors.
+
+        std::vector<int> projs_idx;
+
+        for (int idx = 1200; idx > 0;
+             idx -= angular_sub_sampling) {
+
+            projs_idx.push_back(idx);
+        }
+
+
+        if (projs_idx.size() != sample_indices.size()) {
+            throw std::runtime_error(
+                "Projection and geometry index counts do not match");
+        }
+
+
+        // Projection memory layout:
+        //
+        // [detector row, angle, detector column]
+
+        std::vector<float> projs;
+
+        int total_angles = 0;
+
+        std::vector<double> vecs;
+
+
+        for (int orbit_id : orbits_to_recon) {
+
+            const fs::path orbit_data_path =
+                data_path_full /
+                ("tubeV" + std::to_string(orbit_id));
+
+
+            std::cout << "Loading orbit "
+                      << orbit_id << "\n";
+
+
+            // -----------------------------------------------------------------
+            // Geometry
+            // -----------------------------------------------------------------
+
+            std::vector<double> vecs_orbit =
+                load_geom_vectors(
+                    orbit_data_path / vecs_name,
+                    sample_indices);
+
+
+            vecs.insert(
+                vecs.end(),
+                vecs_orbit.begin(),
+                vecs_orbit.end());
+
+
+            // -----------------------------------------------------------------
+            // Dark field
+            // -----------------------------------------------------------------
+
+            std::vector<float> dark =
+                read_tiff(
+                    orbit_data_path / dark_name,
+                    projs_rows,
+                    projs_cols);
+
+
+            const std::size_t img_elems =
+                static_cast<std::size_t>(projs_rows) *
+                projs_cols;
+
+
+            // -----------------------------------------------------------------
+            // Flat field
+            // -----------------------------------------------------------------
+
+            std::vector<float> flat(img_elems, 0.0f);
+
+
+            for (const std::string& fn : flat_name) {
+
+                std::vector<float> f_tmp =
+                    read_tiff(
+                        orbit_data_path / fn,
+                        projs_rows,
+                        projs_cols);
+
+
+                for (std::size_t k = 0; k < img_elems; ++k) {
+                    flat[k] += f_tmp[k];
+                }
+            }
+
+
+            for (std::size_t k = 0; k < img_elems; ++k) {
+
+                flat[k] /=
+                    static_cast<float>(flat_name.size());
+            }
+
+
+            // -----------------------------------------------------------------
+            // Read and preprocess projections.
+            //
+            // Temporary layout:
+            // [angle, detector row, detector column]
+            // -----------------------------------------------------------------
+
+            std::vector<float> projs_orbit(
+                static_cast<std::size_t>(nb_projs_orbit) *
+                img_elems,
+                0.0f);
+
+
+            for (int i = 0; i < nb_projs_orbit; ++i) {
+
+                std::ostringstream fname;
+
+                fname << "scan_"
+                      << std::setw(6)
+                      << std::setfill('0')
+                      << projs_idx[i]
+                      << ".tif";
+
+
+                std::vector<float> proj_img =
+                    read_tiff(
+                        orbit_data_path / fname.str(),
+                        projs_rows,
+                        projs_cols);
+
+
+                float* dst_slice =
+                    projs_orbit.data() +
+                    static_cast<std::size_t>(i) * img_elems;
+
+
+                for (std::size_t k = 0; k < img_elems; ++k) {
+
+                    const float numerator =
+                        proj_img[k] - dark[k];
+
+                    const float denominator =
+                        flat[k] - dark[k];
+
+
+                    if (!std::isfinite(numerator) ||
+                        !std::isfinite(denominator) ||
+                        numerator <= 0.0f ||
+                        denominator <= 0.0f) {
+
+                        dst_slice[k] = 0.0f;
+                        continue;
+                    }
+
+
+                    const float ratio =
+                        numerator / denominator;
+
+
+                    if (!std::isfinite(ratio) ||
+                        ratio <= 0.0f) {
+
+                        dst_slice[k] = 0.0f;
+                        continue;
+                    }
+
+
+                    dst_slice[k] = -std::log(ratio);
+                }
+            }
+
+
+            // -----------------------------------------------------------------
+            // Permute:
+            //
+            // [angle, row, col]
+            //       ->
+            // [row, angle, col]
+            //
+            // Append this orbit along the angle dimension.
+            // -----------------------------------------------------------------
+
+            const int new_total_angles =
+                total_angles + nb_projs_orbit;
+
+
+            std::vector<float> new_projs(
+                static_cast<std::size_t>(projs_rows) *
+                new_total_angles *
+                projs_cols,
+                0.0f);
+
+
+            // Copy previously loaded projections.
+
+            for (int r = 0; r < projs_rows; ++r) {
+
+                for (int a = 0; a < total_angles; ++a) {
+
+                    for (int c = 0; c < projs_cols; ++c) {
+
+                        const std::size_t src_i =
+                            (static_cast<std::size_t>(r) *
+                             total_angles + a) *
+                            projs_cols + c;
+
+
+                        const std::size_t dst_i =
+                            (static_cast<std::size_t>(r) *
+                             new_total_angles + a) *
+                            projs_cols + c;
+
+
+                        new_projs[dst_i] = projs[src_i];
+                    }
+                }
+
+
+                // Copy current orbit.
+
+                for (int a = 0; a < nb_projs_orbit; ++a) {
+
+                    for (int c = 0; c < projs_cols; ++c) {
+
+                        const std::size_t src_i =
+                            (static_cast<std::size_t>(a) *
+                             projs_rows + r) *
+                            projs_cols + c;
+
+
+                        const std::size_t dst_i =
+                            (static_cast<std::size_t>(r) *
+                             new_total_angles +
+                             (total_angles + a)) *
+                            projs_cols + c;
+
+
+                        new_projs[dst_i] = projs_orbit[src_i];
+                    }
+                }
+            }
+
+
+            projs = std::move(new_projs);
+
+            total_angles = new_total_angles;
+        }
+
+
+        // ---------------------------------------------------------------------
+        // Validate loaded data.
+        // ---------------------------------------------------------------------
+
+        if (total_angles <= 0) {
+            throw std::runtime_error(
+                "No projections were loaded");
+        }
+
+
+        if (vecs.size() !=
+            static_cast<std::size_t>(total_angles) * 12) {
+
+            throw std::runtime_error(
+                "Geometry vector count does not match projection count");
+        }
+
+
+        std::cout << "Detector dimensions: "
+                  << projs_rows << " x " << projs_cols
+                  << "\n";
+
+        std::cout << "Loaded "
+                  << total_angles
+                  << " projections\n";
+
+
+        std::cout << std::fixed << std::setprecision(3)
+                  << elapsed_sec(t0)
+                  << " sec elapsed\n";
+
+
+        // =====================================================================
+        // ITERATIVE RECONSTRUCTION
+        // =====================================================================
+
+        t0 = std::chrono::steady_clock::now();
+
+        std::cout << "Compute reconstruction:\n";
+
+
+        const int vol_dim =
+            50 * voxel_per_mm + 1;
+
+
+        const double vox_sz =
+            1.0 / static_cast<double>(voxel_per_mm);
+
+
+        const std::size_t vol_elems =
+            static_cast<std::size_t>(vol_dim) *
+            vol_dim *
+            vol_dim;
+
+
+        std::vector<float> vol_rec(
+            vol_elems,
+            0.0f);
+
+
+        // ---------------------------------------------------------------------
+        // ASTRA volume geometry.
+        // ---------------------------------------------------------------------
+
+        const float half_extent =
+            0.5f * static_cast<float>(vol_dim) *
+            static_cast<float>(vox_sz);
+
+        astra::CVolumeGeometry3D scaled_vol_geom(
+            vol_dim,
+            vol_dim,
+            vol_dim,
+            -half_extent, -half_extent, -half_extent,  // min X, Y, Z
+            half_extent,  half_extent,  half_extent   // max X, Y, Z
+        );
+
+        if (!scaled_vol_geom.isInitialized()) {
+            throw std::runtime_error(
+                "ASTRA volume geometry initialization failed");
+        }
+
+
+        // ---------------------------------------------------------------------
+        // Construct ASTRA cone-vector geometry.
+        //
+        // Geometry file convention:
+        //
+        // p[0..2]   = source position
+        // p[3..5]   = detector center
+        // p[6..8]   = detector U vector
+        // p[9..11]  = detector V vector
+        //
+        // SConeProjection.fDetS is the detector corner position.
+        // ---------------------------------------------------------------------
+
+        std::vector<astra::SConeProjection> vecs_copy(
+            static_cast<std::size_t>(total_angles));
+
+
+        for (int i = 0; i < total_angles; ++i) {
+
+            const double* p =
+                vecs.data() +
+                static_cast<std::size_t>(i) * 12;
+
+
+            astra::SConeProjection& v =
+                vecs_copy[static_cast<std::size_t>(i)];
+
+
+            // Source position.
+
+            v.fSrcX = p[0];
+            v.fSrcY = p[1];
+            v.fSrcZ = p[2];
+
+
+            // Detector corner:
+            //
+            // center - 0.5 * number of columns * U
+            //        - 0.5 * number of rows    * V
+
+            v.fDetSX =
+                p[3]
+                - 0.5 * projs_cols * p[6]
+                - 0.5 * projs_rows * p[9];
+
+
+            v.fDetSY =
+                p[4]
+                - 0.5 * projs_cols * p[7]
+                - 0.5 * projs_rows * p[10];
+
+
+            v.fDetSZ =
+                p[5]
+                - 0.5 * projs_cols * p[8]
+                - 0.5 * projs_rows * p[11];
+
+
+            // Detector U vector.
+
+            v.fDetUX = p[6];
+            v.fDetUY = p[7];
+            v.fDetUZ = p[8];
+
+
+            // Detector V vector.
+
+            v.fDetVX = p[9];
+            v.fDetVY = p[10];
+            v.fDetVZ = p[11];
+        }
+
+
+        astra::CConeVecProjectionGeometry3D proj_geom(
+            total_angles,
+            projs_rows,
+            projs_cols,
+            std::move(vecs_copy));
+
+
+        // ---------------------------------------------------------------------
+        // Allocate ASTRA data objects.
+        // ---------------------------------------------------------------------
+
+        std::unique_ptr<astra::CFloat32VolumeData3D> vol_data(
+            astra::createCFloat32VolumeData3DMemory(
+                scaled_vol_geom));
+
+
+        std::unique_ptr<astra::CFloat32ProjectionData3D> sino_data(
+            astra::createCFloat32ProjectionData3DMemory(
+                proj_geom));
+
+
+        if (!vol_data || !sino_data) {
+
+            throw std::runtime_error(
+                "Failed to allocate ASTRA 3D data objects");
+        }
+
+
+        // Copy measured projections into ASTRA memory.
+
+        std::copy(
+            projs.begin(),
+            projs.end(),
+            sino_data->getFloat32Memory());
+
+
+        // Initialize reconstruction volume.
+
+        std::copy(
+            vol_rec.begin(),
+            vol_rec.end(),
+            vol_data->getFloat32Memory());
+
+
+        // ---------------------------------------------------------------------
+        // Nesterov reconstruction.
+        // ---------------------------------------------------------------------
+
+        ct::NesterovOptions opts;
+
+        opts.num_iterations = 50;
+
+        opts.min_constraint = 0.0f;
+
+
+        ct::NesterovAcceleratedGradient solver(
+            scaled_vol_geom,
+            proj_geom,
+            *sino_data,
+            opts);
+
+
+        solver.run(*vol_data);
+
+
+        // Copy reconstructed volume from ASTRA memory.
+
+        std::copy(
+            vol_data->getFloat32Memory(),
+            vol_data->getFloat32Memory() + vol_elems,
+            vol_rec.begin());
+
+
+        std::cout << std::fixed << std::setprecision(3)
+                  << elapsed_sec(t0)
+                  << " sec elapsed\n";
+
+
+        // =====================================================================
+        // SAVE RECONSTRUCTION
+        // =====================================================================
+
+        t0 = std::chrono::steady_clock::now();
+
+        std::cout << "Save results\n";
+
+
+        const fs::path recon_path_full =
+            recon_path /
+            ("Walnut" + std::to_string(walnut_id));
+
+
+        fs::create_directories(recon_path_full);
+
+
+        std::string orbit_str = "pos";
+
+        for (int orbit_id : orbits_to_recon) {
+            orbit_str += std::to_string(orbit_id);
+        }
+
+
+        const std::size_t slice_elems =
+            static_cast<std::size_t>(vol_dim) * vol_dim;
+
+
+        for (int i = 0; i < vol_dim; ++i) {
+
+            std::ostringstream fname;
+
+            fname << "nnls_"
+                  << orbit_str
+                  << "_iter" << opts.num_iterations
+                  << "_ass" << angular_sub_sampling
+                  << "_vmm" << voxel_per_mm
+                  << "_"
+                  << std::setw(6)
+                  << std::setfill('0')
+                  << i
+                  << ".tiff";
+
+
+            const float* slice_ptr =
+                vol_rec.data() +
+                static_cast<std::size_t>(i) * slice_elems;
+
+
+            write_float_tiff_2d(
+                recon_path_full / fname.str(),
+                slice_ptr,
+                vol_dim,
+                vol_dim);
+        }
+
+
+        std::cout << std::fixed << std::setprecision(3)
+                  << elapsed_sec(t0)
+                  << " sec elapsed\n";
+
+
+        std::cout << "Reconstruction completed successfully.\n";
+
     }
-    catch (const std::exception& error) {
+    catch (const std::exception& e) {
 
-        std::cerr << "\nFATAL ERROR: "
-                  << error.what() << "\n";
+        std::cerr << "ERROR: "
+                  << e.what()
+                  << "\n";
 
         return 1;
     }
-}
 
+
+    return 0;
+}
